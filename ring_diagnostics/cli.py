@@ -5,13 +5,14 @@ import datetime
 import json
 import os
 import queue
+import select
 import signal
 import sys
 import threading
 import time
 from pathlib import Path
 
-from ring_diagnostics import journal, native
+from ring_diagnostics import guided, journal, native
 
 
 def arguments() -> argparse.Namespace:
@@ -20,10 +21,11 @@ def arguments() -> argparse.Namespace:
     parser.add_argument('--sessions', type=Path, default=Path('sessions'), help='Directory for timestamped JSONL sessions.')
     parser.add_argument('--inventory', action='store_true', help='Inventory matching devices without seizing them.')
     parser.add_argument('--request-access', action='store_true', help='Ask macOS for Input Monitoring access if needed.')
+    parser.add_argument('--guided', action='store_true', help='Run the mode-grouped interactive physical tests.')
     return parser.parse_args()
 
 
-def writer_loop(stream: object, session_id: str, events: queue.Queue, failure: list) -> None:
+def writer_loop(stream: object, session_id: str, events: queue.Queue, failure: list, quiet: bool = False) -> None:
     sequence = 0
     try:
         while True:
@@ -32,7 +34,7 @@ def writer_loop(stream: object, session_id: str, events: queue.Queue, failure: l
                 return
             sequence += 1
             event, fields = item
-            journal.record(stream, session_id, sequence, event, **fields)
+            journal.record(stream, session_id, sequence, event, console=not quiet or event in ('error', 'capture_not_ready'), **fields)
     except Exception as error:
         failure.append(repr(error))
         print(f'FATAL: journal writer failed: {error!r}', file=sys.stderr, flush=True)
@@ -44,7 +46,7 @@ def emit(events: queue.Queue, event: str, **fields: object) -> None:
     events.put((event, fields))
 
 
-def open_devices(cf: object, io: object, devices: list, events: queue.Queue, stopped: threading.Event) -> list:
+def open_devices(cf: object, io: object, devices: list, events: queue.Queue, stopped: threading.Event, state: dict | None = None) -> list:
     opened = []
     run_loop = cf.CFRunLoopGetCurrent()
     run_mode = ctypes.c_void_p.in_dll(cf, 'kCFRunLoopDefaultMode').value
@@ -58,8 +60,11 @@ def open_devices(cf: object, io: object, devices: list, events: queue.Queue, sto
         buffer = (ctypes.c_uint8 * max(4096, details.get('MaxInputReportSize') or 0))()
         def report(context, status, sender, report_type, report_id, data, length, *, index=index):
             raw = ctypes.string_at(data, length) if length >= 0 else b''
+            trial_id = state.get('trial_id') if state and state.get('trial') else None
+            if trial_id:
+                state['report_count'] += 1
             emit(events, 'input_report', device_index=index, status=status, report_type=report_type,
-                 report_id=report_id, length=length, raw_hex=raw.hex(), connection_generation=1)
+                 report_id=report_id, length=length, raw_hex=raw.hex(), connection_generation=1, trial_id=trial_id)
         def removal(context, status, sender, *, index=index):
             emit(events, 'device_removed', device_index=index, status=status)
             stopped.set()
@@ -72,21 +77,31 @@ def open_devices(cf: object, io: object, devices: list, events: queue.Queue, sto
     return opened
 
 
-def run_capture(cf: object, io: object, devices: list, events: queue.Queue, failure: list) -> int:
+def run_capture(cf: object, io: object, devices: list, events: queue.Queue, failure: list, interactive: bool = False) -> int:
     stopped = threading.Event()
     previous_signal = signal.signal(signal.SIGINT, lambda *_: stopped.set())
     opened = []
+    state = {'plan': guided.plan(), 'index': 0, 'mode': 'T', 'waiting_for_mode': True, 'trial': None, 'attempt': 0}
     try:
-        opened = open_devices(cf, io, devices, events, stopped)
+        opened = open_devices(cf, io, devices, events, stopped, state if interactive else None)
         if len(opened) != len(devices):
             emit(events, 'capture_not_ready', reason='At least one matching HID entry could not be seized.')
             return 1
         emit(events, 'capture_ready', seized_entries=len(opened), suppression_verified=False,
              message='All matching entries opened exclusively. Press a button; verify native effects separately. Ctrl-C stops capture.')
+        if interactive:
+            print(f'Exclusive open succeeded for {len(opened)} F3 HID entry/entries. Raw capture is active.', flush=True)
+            guided.prompt_mode('T')
         while not stopped.is_set() and not failure:
-            cf.CFRunLoopRunInMode(opened[0][5], 0.25, False)
+            cf.CFRunLoopRunInMode(opened[0][5], 0.1, False)
+            if interactive and select.select([sys.stdin], [], [], 0)[0]:
+                line = sys.stdin.readline()
+                if not line or not guided.advance(state, line, emit, events):
+                    stopped.set()
         return 1 if failure else 0
     finally:
+        if interactive and state.get('trial'):
+            emit(events, 'trial_interrupted', trial_id=state['trial_id'], reason='capture_stopped', received_reports=state['report_count'])
         for device, buffer, report, removal, run_loop, run_mode in reversed(opened):
             io.IOHIDDeviceUnscheduleFromRunLoop(device, run_loop, run_mode)
             result = io.IOHIDDeviceClose(device, 0)
@@ -113,7 +128,7 @@ def execute(options: argparse.Namespace, events: queue.Queue, failure: list) -> 
         if options.inventory:
             [emit(events, 'device_inventory', device_index=index, details=native.describe(cf, io, device)) for index, device in enumerate(devices)]
             return 0
-        return run_capture(cf, io, devices, events, failure)
+        return run_capture(cf, io, devices, events, failure, options.guided)
     finally:
         [cf.CFRelease(device) for device in devices]
 
@@ -122,10 +137,12 @@ def main() -> int:
     options = arguments()
     stream, session_id, path = journal.create_session(options.sessions)
     events, failure = queue.Queue(), []
-    writer = threading.Thread(target=writer_loop, args=(stream, session_id, events, failure), daemon=False)
+    writer = threading.Thread(target=writer_loop, args=(stream, session_id, events, failure, options.guided), daemon=False)
     writer.start()
     exit_code = 1
     try:
+        if options.guided:
+            print(f'New session log: {path.resolve()}', flush=True)
         emit(events, 'session_start', environment=journal.environment(), arguments=vars(options) | {'sessions': str(options.sessions)}, journal_path=str(path.resolve()), pid=os.getpid())
         exit_code = execute(options, events, failure)
     except Exception as error:

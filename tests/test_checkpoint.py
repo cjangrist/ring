@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ring_diagnostics import cli, journal
+from ring_diagnostics import cli, guided, journal
 
 
 class FakeCoreFoundation:
@@ -42,6 +42,25 @@ class FakeIOKit:
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_guided_plan_covers_basic_matrix_and_groups_modes(self):
+        plan = guided.plan()
+        self.assertEqual(len(plan), 24)
+        self.assertEqual([case['mode'] for case in plan], ['T'] * 12 + ['C'] * 12)
+        self.assertEqual(len({(case['mode'], case['button'], case['action']) for case in plan}), 24)
+
+    def test_guided_repeat_and_skip_are_recorded(self):
+        events = queue.Queue()
+        state = {'plan': guided.plan(), 'index': 0, 'mode': 'T', 'waiting_for_mode': True, 'trial': None, 'attempt': 0}
+        self.assertTrue(guided.advance(state, '\n', cli.emit, events))
+        state['report_count'] = 2
+        self.assertTrue(guided.advance(state, 'r\n', cli.emit, events))
+        self.assertEqual(state['index'], 0)
+        self.assertTrue(guided.advance(state, 's\n', cli.emit, events))
+        self.assertEqual(state['index'], 1)
+        ends = [fields for event, fields in events.queue if event == 'trial_end']
+        self.assertEqual([item['outcome'] for item in ends], ['repeat_requested', 'skipped'])
+        self.assertEqual(ends[0]['received_reports'], 2)
+
     def test_journal_preserves_order_and_bytes(self):
         stream, session_id, path = journal.create_session(Path('tmp/20261101_checkpoint_tests'))
         journal.record(stream, session_id, 1, 'input_report', raw_hex='030000ff', report_id=3)

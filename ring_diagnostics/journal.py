@@ -18,14 +18,15 @@ def create_session(directory: Path) -> tuple[object, str, Path]:
     return os.fdopen(descriptor, "w", encoding="utf-8", buffering=1), session_id, file_path
 
 
-def record(stream: object, session_id: str, sequence: int, event: str, **fields: object) -> None:
+def record(stream: object, session_id: str, sequence: int, event: str, console: bool = True, **fields: object) -> None:
     data = {"schema_version": 1, "session_id": session_id, "sequence": sequence,
             "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds"),
             "monotonic_ns": time.monotonic_ns(), "event": event, **fields}
     stream.write(json.dumps(data, ensure_ascii=False, sort_keys=True) + "\n")
     stream.flush()
     os.fsync(stream.fileno())
-    print(json.dumps(data, ensure_ascii=False, sort_keys=True), flush=True)
+    if console:
+        print(json.dumps(data, ensure_ascii=False, sort_keys=True), flush=True)
 
 
 def environment() -> dict:
