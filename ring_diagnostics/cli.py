@@ -21,7 +21,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument('--inventory', action='store_true', help='Inventory matching devices without seizing them.')
     parser.add_argument('--request-access', action='store_true', help='Ask macOS for Input Monitoring access if needed.')
     parser.add_argument('--guided', action='store_true', help='Run the mode-grouped interactive physical tests.')
-    parser.add_argument('--guided-part2', action='store_true', help='Run one-attempt confirmation trials with timed cues.')
+    parser.add_argument('--guided-part2', action='store_true', help='Run eight short, self-paced confirmation tests.')
     options = parser.parse_args()
     options.guided = options.guided or options.guided_part2
     if options.guided and options.inventory:
@@ -89,6 +89,9 @@ def capture_loop(cf: object, run_mode: int, state: dict, events: queue.Queue,
             break
         if part2:
             confirmation.tick(state, emit, events, time.monotonic_ns())
+            if state['finished']:
+                stopped.set()
+                break
         if interactive and select.select([sys.stdin], [], [], 0)[0]:
             line = sys.stdin.readline()
             active = bool(line) and (confirmation.advance(state, line, emit, events, time.monotonic_ns())
@@ -114,9 +117,10 @@ def run_capture(cf: object, io: object, devices: list, events: queue.Queue, fail
              message='All matching entries opened exclusively. Press a button; verify native effects separately. Ctrl-C stops capture.')
         if interactive:
             print(f'Exclusive open succeeded for {len(opened)} F3 HID entry/entries. Raw capture is active.', flush=True)
-            emit(events, 'guided_plan', plan_version=2 if part2 else 1, trials=state['plan'])
+            emit(events, 'guided_plan', plan_version='2-easy' if part2 else 1, trials=state['plan'])
             if part2:
-                print('Part two: one attempt per prompt. Follow the visible cues; audio is not required.', flush=True)
+                print('Just eight things to try, at your own pace. One try each is enough.', flush=True)
+                print('Enter moves on. If you want a redo, type r + Enter; q quits.', flush=True)
                 confirmation.prompt(state)
             else:
                 guided.prompt_mode('T')

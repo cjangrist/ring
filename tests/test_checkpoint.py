@@ -105,65 +105,48 @@ class ConfirmationTests(unittest.TestCase):
 
     def test_plan_controls_and_single_mode_change(self):
         plan = self.state['plan']
-        self.assertEqual(len(plan), 40)
-        self.assertEqual([case['mode'] for case in plan], ['T'] * 18 + ['C'] * 22)
-        for block in {case['block_id'] for case in plan}:
-            cases = [case for case in plan if case['block_id'] == block]
-            self.assertEqual(cases[0]['variant'], 'control_before')
-            self.assertEqual(cases[-1]['variant'], 'control_after')
-            self.assertTrue(all(case['repetitions'] == 1 for case in cases))
+        self.assertEqual(len(plan), 8)
+        self.assertEqual([case['mode'] for case in plan], ['T'] * 2 + ['C'] * 6)
+        self.assertTrue(all(case['repetitions'] == 1 for case in plan))
 
-    def test_enter_cannot_end_attempt_before_cues_and_tail(self):
+    def test_tail_reports_stay_in_trial_and_extra_enter_does_not_skip(self):
         self.advance('\n')
         self.advance('\n')
         self.advance('\n')
-        self.assertEqual(self.state['phase'], 'cues')
+        self.assertEqual(self.state['phase'], 'settling')
         self.assertFalse(any(event == 'trial_end' for event, _ in self.events.queue))
-        for second in (0, 1, 2, 4):
-            self.tick(second * 1_000_000_000)
-        self.assertEqual(self.state['phase'], 'review')
-        self.advance('\n', 5_000_000_000)
+        self.state['report_count'] = 3
+        self.tick(999_999_999)
+        self.assertEqual(self.state['index'], 0)
+        self.tick(1_000_000_000)
         endings = [fields for event, fields in self.events.queue if event == 'trial_end']
-        self.assertEqual(endings[0]['received_reports'], 0)
+        self.assertEqual(endings[0]['received_reports'], 3)
         self.assertFalse(endings[0]['verified'])
-        self.assertEqual(self.state['phase'], 'ready')
+        self.assertEqual((self.state['index'], self.state['phase']), (1, 'action'))
 
     def test_repeat_preserves_rejected_attempt(self):
         self.advance('\n')
-        self.advance('\n')
-        for second in (0, 1, 2, 4):
-            self.tick(second * 1_000_000_000)
         first_id = self.state['trial_id']
-        self.advance('r\n', 5_000_000_000)
-        self.advance('\n', 6_000_000_000)
+        self.advance('r\n')
+        self.tick(1_000_000_000)
         self.assertEqual(self.state['index'], 0)
         self.assertNotEqual(self.state['trial_id'], first_id)
         ending = [fields for event, fields in self.events.queue if event == 'trial_end'][0]
         self.assertEqual(ending['outcome'], 'repeat_requested')
-        self.assertFalse(ending['user_reports_followed_cues'])
 
-    def test_late_cue_invalidates_attempt_instead_of_bursting(self):
+    def test_complete_flow_has_eight_attempts_and_no_timing_claim(self):
         self.advance('\n')
-        self.advance('\n')
-        self.tick(900_000_000)
-        self.assertFalse(self.state['timing_valid'])
-        self.assertEqual(self.state['phase'], 'review')
+        for index in range(8):
+            if self.state['phase'] == 'mode':
+                self.advance('\n', index * 2_000_000_000)
+            self.advance('\n', index * 2_000_000_000)
+            self.tick(index * 2_000_000_000 + 1_000_000_000)
+        self.assertTrue(self.state['finished'])
+        self.assertIsNone(self.state['trial'])
+        endings = [fields for event, fields in self.events.queue if event == 'trial_end']
+        self.assertEqual(len(endings), 8)
+        self.assertTrue(all(not ending['verified'] for ending in endings))
         self.assertFalse(any(event == 'physical_action_cue' for event, _ in self.events.queue))
-
-    def test_cues_have_requested_onset_intervals_and_release(self):
-        quick = confirmation.schedule({'action': 'triple', 'tap_count': 3, 'cue_onset_interval_ms': 250})
-        self.assertEqual(quick[2:5], [(2, 'TAP 1/3'), (2.25, 'TAP 2/3'), (2.5, 'TAP 3/3')])
-        hold = confirmation.schedule({'action': 'hold'})
-        self.assertEqual(hold[2:], [(2, 'HOLD'), (4, 'RELEASE'), (6, 'FINISHED')])
-
-    def test_mode_transition_and_final_skip(self):
-        self.state.update(index=17, phase='ready')
-        self.advance('s\n')
-        self.assertEqual((self.state['mode'], self.state['phase']), ('C', 'mode'))
-        self.state.update(index=39, phase='ready')
-        self.assertFalse(self.advance('s\n'))
-        completion = [fields for event, fields in self.events.queue if event == 'guided_plan_complete'][0]
-        self.assertFalse(completion['results_verified'])
 
 
 if __name__ == '__main__':
