@@ -1,5 +1,6 @@
 # Durable, ordered JSONL records and concise console status for capture sessions.
 import datetime
+import hashlib
 import json
 import os
 import platform
@@ -33,4 +34,6 @@ def environment() -> dict:
     return {"platform": platform.platform(), "macos_version": platform.mac_ver()[0],
             "machine": platform.machine(), "python": sys.version, "executable": sys.executable,
             "backend": "IOKit IOHIDDevice", "diagnostic_version": "0.1.0",
-            "physical_mode": "unknown", "actions_enabled": False}
+            "physical_mode": "unknown", "actions_enabled": False,
+            "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                              for path in sorted(Path(__file__).parent.glob('*.py'))}}

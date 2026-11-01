@@ -2,7 +2,6 @@
 import argparse
 import ctypes
 import datetime
-import json
 import os
 import queue
 import select
@@ -12,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-from ring_diagnostics import guided, journal, native
+from ring_diagnostics import confirmation, guided, journal, native
 
 
 def arguments() -> argparse.Namespace:
@@ -22,7 +21,12 @@ def arguments() -> argparse.Namespace:
     parser.add_argument('--inventory', action='store_true', help='Inventory matching devices without seizing them.')
     parser.add_argument('--request-access', action='store_true', help='Ask macOS for Input Monitoring access if needed.')
     parser.add_argument('--guided', action='store_true', help='Run the mode-grouped interactive physical tests.')
-    return parser.parse_args()
+    parser.add_argument('--guided-part2', action='store_true', help='Run one-attempt confirmation trials with timed cues.')
+    options = parser.parse_args()
+    options.guided = options.guided or options.guided_part2
+    if options.guided and options.inventory:
+        parser.error('Choose either guided capture or inventory.')
+    return options
 
 
 def writer_loop(stream: object, session_id: str, events: queue.Queue, failure: list, quiet: bool = False) -> None:
@@ -77,11 +81,30 @@ def open_devices(cf: object, io: object, devices: list, events: queue.Queue, sto
     return opened
 
 
-def run_capture(cf: object, io: object, devices: list, events: queue.Queue, failure: list, interactive: bool = False) -> int:
+def capture_loop(cf: object, run_mode: int, state: dict, events: queue.Queue,
+                 stopped: threading.Event, failure: list, interactive: bool, part2: bool) -> None:
+    while not stopped.is_set() and not failure:
+        cf.CFRunLoopRunInMode(run_mode, 0.01 if part2 else 0.1, False)
+        if stopped.is_set():
+            break
+        if part2:
+            confirmation.tick(state, emit, events, time.monotonic_ns())
+        if interactive and select.select([sys.stdin], [], [], 0)[0]:
+            line = sys.stdin.readline()
+            active = bool(line) and (confirmation.advance(state, line, emit, events, time.monotonic_ns())
+                                    if part2 else guided.advance(state, line, emit, events))
+            if not active:
+                stopped.set()
+
+
+def run_capture(cf: object, io: object, devices: list, events: queue.Queue, failure: list,
+                interactive: bool = False, part2: bool = False) -> int:
     stopped = threading.Event()
     previous_signal = signal.signal(signal.SIGINT, lambda *_: stopped.set())
     opened = []
     state = {'plan': guided.plan(), 'index': 0, 'mode': 'T', 'waiting_for_mode': True, 'trial': None, 'attempt': 0}
+    if part2:
+        state = confirmation.create_state()
     try:
         opened = open_devices(cf, io, devices, events, stopped, state if interactive else None)
         if len(opened) != len(devices):
@@ -91,13 +114,13 @@ def run_capture(cf: object, io: object, devices: list, events: queue.Queue, fail
              message='All matching entries opened exclusively. Press a button; verify native effects separately. Ctrl-C stops capture.')
         if interactive:
             print(f'Exclusive open succeeded for {len(opened)} F3 HID entry/entries. Raw capture is active.', flush=True)
-            guided.prompt_mode('T')
-        while not stopped.is_set() and not failure:
-            cf.CFRunLoopRunInMode(opened[0][5], 0.1, False)
-            if interactive and select.select([sys.stdin], [], [], 0)[0]:
-                line = sys.stdin.readline()
-                if not line or not guided.advance(state, line, emit, events):
-                    stopped.set()
+            emit(events, 'guided_plan', plan_version=2 if part2 else 1, trials=state['plan'])
+            if part2:
+                print('Part two: one attempt per prompt. Follow the visible cues; audio is not required.', flush=True)
+                confirmation.prompt(state)
+            else:
+                guided.prompt_mode('T')
+        capture_loop(cf, opened[0][5], state, events, stopped, failure, interactive, part2)
         return 1 if failure else 0
     finally:
         if interactive and state.get('trial'):
@@ -128,7 +151,7 @@ def execute(options: argparse.Namespace, events: queue.Queue, failure: list) -> 
         if options.inventory:
             [emit(events, 'device_inventory', device_index=index, details=native.describe(cf, io, device)) for index, device in enumerate(devices)]
             return 0
-        return run_capture(cf, io, devices, events, failure, options.guided)
+        return run_capture(cf, io, devices, events, failure, options.guided, options.guided_part2)
     finally:
         [cf.CFRelease(device) for device in devices]
 
