@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-from ring_diagnostics import confirmation, guided, journal, native
+from f3_ring import confirmation, guided, journal, native
 
 
 def arguments() -> argparse.Namespace:

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "exporter": "scripts/export_capture.py",
+  "source": "Physical F3 trials on macOS, 2026-11-01; not synthetic input.",
+  "omitted": [
+    "personal paths",
+    "process and location identifiers",
+    "free-text notes",
+    "prompt wording"
+  ],
+  "limitations": [
+    "Physical counts and timing are self-reported.",
+    "The last baseline hold was performed once rather than the requested three times.",
+    "No working single-tap controls bracketed the eight confirmation attempts.",
+    "Exclusive API open succeeded; native-input suppression remains unverified."
+  ],
+  "captures": [
+    {
+      "file": "baseline.jsonl",
+      "session_id": "20261101T102839.126548Z-9bcd2755",
+      "records": 616,
+      "input_reports": 557,
+      "source_sha256": "664c008aba68d617e0e6780c2104df6160c1fcef74b9e2d8b2eb7eb2fbceb518",
+      "export_sha256": "7dc319bb87fdf5e72d37170ec5e55dd89f4cc04bf65d2cf58d2033d7def23bb0"
+    },
+    {
+      "file": "confirmation.jsonl",
+      "session_id": "20261101T104632.706363Z-bebe80c7",
+      "records": 61,
+      "input_reports": 25,
+      "source_sha256": "3a9ccf017a8f81e4ec4d98a9082ae3871c86fae72732e40fa14aa6f282746da2",
+      "export_sha256": "8f69bfcb2de19a6c0262a2b3dd87d9d8df71694c2023b47f93e43d366d766cf6"
+    }
+  ]
+}

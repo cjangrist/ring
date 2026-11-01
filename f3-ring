@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+F3_RING_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export UV_PYTHON_INSTALL_DIR="$F3_RING_ROOT/.uv-python"
+export UV_CACHE_DIR="$F3_RING_ROOT/.uv-cache"
+cd "$F3_RING_ROOT"
+exec uv run --locked f3-ring "$@"
