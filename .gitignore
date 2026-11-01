@@ -230,3 +230,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-local uv runtime and diagnostic sessions
+.uv-cache/
+.uv-python/
+sessions/
